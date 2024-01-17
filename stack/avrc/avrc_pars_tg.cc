@@ -44,6 +44,12 @@ static tAVRC_STS avrc_ctrl_pars_vendor_cmd(tAVRC_MSG_VENDOR* p_msg,
                                            tAVRC_COMMAND* p_result) {
   tAVRC_STS status = AVRC_STS_NO_ERROR;
 
+  if (p_msg->vendor_len < 4) {  // 4 == pdu + reserved byte + len as uint16
+    AVRC_TRACE_WARNING("%s: message length %d too short: must be at least 4",
+                       __func__, p_msg->vendor_len);
+    android_errorWriteLog(0x534e4554, "205571133");
+    return AVRC_STS_INTERNAL_ERR;
+  }
   uint8_t* p = p_msg->p_vendor_data;
   p_result->pdu = *p++;
   AVRC_TRACE_DEBUG("%s pdu:0x%x", __func__, p_result->pdu);
@@ -74,6 +80,12 @@ static tAVRC_STS avrc_ctrl_pars_vendor_cmd(tAVRC_MSG_VENDOR* p_msg,
     case AVRC_PDU_REGISTER_NOTIFICATION: /* 0x31 */
       BE_STREAM_TO_UINT8(p_result->reg_notif.event_id, p);
       BE_STREAM_TO_UINT32(p_result->reg_notif.param, p);
+
+      if (p_result->reg_notif.event_id == 0 ||
+          p_result->reg_notif.event_id > AVRC_NUM_NOTIF_EVENTS) {
+        android_errorWriteLog(0x534e4554, "181860042");
+        status = AVRC_STS_BAD_PARAM;
+      }
       break;
     default:
       status = AVRC_STS_BAD_CMD;
@@ -310,6 +322,13 @@ static tAVRC_STS avrc_pars_vendor_cmd(tAVRC_MSG_VENDOR* p_msg,
         AVRC_TRACE_DEBUG("avrc_pars_vendor_cmd() event id: %d", p_result->reg_notif.event_id);
       } else {
         BE_STREAM_TO_UINT8(p_result->reg_notif.event_id, p);
+        if (!AVRC_IS_VALID_EVENT_ID(p_result->reg_notif.event_id)) {
+          android_errorWriteLog(0x534e4554, "168802990");
+          AVRC_TRACE_ERROR("%s: Invalid event id: %d", __func__,
+                           p_result->reg_notif.event_id);
+          return AVRC_STS_BAD_PARAM;
+        }
+
         BE_STREAM_TO_UINT32(p_result->reg_notif.param, p);
       }
       break;
@@ -405,6 +424,12 @@ tAVRC_STS AVRC_Ctrl_ParsCommand(tAVRC_MSG* p_msg, tAVRC_COMMAND* p_result) {
   return status;
 }
 
+#define RETURN_STATUS_IF_FALSE(_status_, _b_, _msg_, ...) \
+  if (!(_b_)) {                                           \
+    AVRC_TRACE_DEBUG(_msg_, ##__VA_ARGS__);               \
+    return _status_;                                      \
+  }
+
 /*******************************************************************************
  *
  * Function         avrc_pars_browsing_cmd
@@ -423,6 +448,7 @@ static tAVRC_STS avrc_pars_browsing_cmd(tAVRC_MSG_BROWSE* p_msg,
   tAVRC_STS status = AVRC_STS_NO_ERROR;
   uint8_t* p = p_msg->p_browse_data;
   int count, p_browse_packet_len = 0;
+  uint16_t min_len = 3;
 
   p_result->pdu = *p++;
   AVRC_TRACE_DEBUG("%s: pdu:0x%x, *p:%d , buf_len: %d",
@@ -453,6 +479,7 @@ static tAVRC_STS avrc_pars_browsing_cmd(tAVRC_MSG_BROWSE* p_msg,
       break;
 
     case AVRC_PDU_GET_FOLDER_ITEMS: /* 0x71 */
+      min_len += 10;
       if (p_browse_packet_len < 10) {
         status = AVRC_STS_BAD_PARAM;
         AVRC_TRACE_ERROR("%s: browse packet length criteria didn't match,status:%d ",
@@ -488,6 +515,11 @@ static tAVRC_STS avrc_pars_browsing_cmd(tAVRC_MSG_BROWSE* p_msg,
           p_result->get_items.attr_count = count = (buf_len >> 2);
         }
         for (int idx = 0, count = 0; idx < p_result->get_items.attr_count && count < 8; idx++) {
+          min_len += 4;
+          RETURN_STATUS_IF_FALSE(AVRC_STS_BAD_CMD,
+                                (p_msg->browse_len >= min_len),
+                                 "msg too short");
+
           BE_STREAM_TO_UINT32(p_result->get_items.p_attr_list[idx], p);
           if (AVRC_IS_VALID_MEDIA_ATTRIBUTE(
                   p_result->get_items.p_attr_list[idx])) {
@@ -519,6 +551,7 @@ static tAVRC_STS avrc_pars_browsing_cmd(tAVRC_MSG_BROWSE* p_msg,
       break;
 
     case AVRC_PDU_GET_ITEM_ATTRIBUTES: /* 0x73 */
+      min_len += 12;
       if (p_browse_packet_len < 12) {
         status = AVRC_STS_BAD_PARAM;
         AVRC_TRACE_ERROR("%s: browse packet length criteria didn't match,status:%d ",
@@ -545,6 +578,11 @@ static tAVRC_STS avrc_pars_browsing_cmd(tAVRC_MSG_BROWSE* p_msg,
         }
         for (int idx = 0, count = 0; idx < p_result->get_attrs.attr_count && count < 8;
              idx++) {
+          min_len += 4;
+          RETURN_STATUS_IF_FALSE(AVRC_STS_BAD_CMD,
+                                (p_msg->browse_len >= min_len),
+                                 "msg too short");
+
           BE_STREAM_TO_UINT32(p_result->get_attrs.p_attr_list[count], p);
           if (AVRC_IS_VALID_MEDIA_ATTRIBUTE(
                   p_result->get_attrs.p_attr_list[count])) {

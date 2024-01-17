@@ -35,10 +35,12 @@
 #define APPLY_START_FLAG(handle) (((handle)&0xCFFF) | 0x2000)
 #define SUB_EVENT(event) ((event)&MSG_SUB_EVT_MASK)
 #define GET_BOUNDARY_FLAG(handle) (((handle) >> 12) & 0x0003)
+#define GET_BROADCAST_FLAG(handle) (((handle) >> 14) & 0x0003)
 
 #define HANDLE_MASK 0x0FFF
 #define START_PACKET_BOUNDARY 2
 #define CONTINUATION_PACKET_BOUNDARY 1
+#define POINT_TO_POINT 0
 #define L2CAP_HEADER_SIZE 4
 
 // Our interface and callbacks
@@ -121,17 +123,23 @@ static void reassemble_and_dispatch(UNUSED_ATTR BT_HDR* packet) {
   if ((packet->event & MSG_EVT_MASK) == MSG_HC_TO_STACK_HCI_ACL) {
     uint8_t* stream = packet->data;
     uint16_t handle;
-    uint16_t l2cap_length;
     uint16_t acl_length;
 
     STREAM_TO_UINT16(handle, stream);
     STREAM_TO_UINT16(acl_length, stream);
-    STREAM_TO_UINT16(l2cap_length, stream);
 
     CHECK(acl_length == packet->len - HCI_ACL_PREAMBLE_SIZE);
 
     uint8_t boundary_flag = GET_BOUNDARY_FLAG(handle);
+    uint8_t broadcast_flag = GET_BROADCAST_FLAG(handle);
     handle = handle & HANDLE_MASK;
+
+    if (broadcast_flag != POINT_TO_POINT) {
+      LOG_WARN(LOG_TAG, "dropping broadcast packet");
+      android_errorWriteLog(0x534e4554, "169327567");
+      buffer_allocator->free(packet);
+      return;
+    }
 
     if (boundary_flag == START_PACKET_BOUNDARY) {
       auto map_iter = partial_packets.find(handle);
@@ -152,6 +160,9 @@ static void reassemble_and_dispatch(UNUSED_ATTR BT_HDR* packet) {
         buffer_allocator->free(packet);
         return;
       }
+
+      uint16_t l2cap_length;
+      STREAM_TO_UINT16(l2cap_length, stream);
 
       uint16_t full_length =
           l2cap_length + L2CAP_HEADER_SIZE + HCI_ACL_PREAMBLE_SIZE;
